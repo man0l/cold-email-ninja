@@ -6,6 +6,7 @@ Clean contact lists by filtering leads and validating website availability. This
 ## Inputs
 - **Source URL**: Google Sheet URL containing the leads (Required).
 - **Output Sheet**: Name of the new Google Sheet to create (Required).
+- **Source Sheet** (Optional): Name of the tab to read from (e.g. "Fixed Columns").
 - **Category** (Optional): Filter leads by specific category/categories (substring match, OR logic).
 - **Folder ID** (Optional): Google Drive Folder ID to create the output sheet in. Falls back to `GOOGLE_DRIVE_FOLDER_ID` env var if not specified.
 - **Max Leads** (Optional): Limit validation count (for testing).
@@ -24,7 +25,7 @@ Clean contact lists by filtering leads and validating website availability. This
     -   Checks each website in **parallel** using configurable workers (default: 10).
     -   Sends a `HEAD` (fallback to `GET`) request.
     -   **Keeps only websites returning 200 OK**.
-    -   **Checkpoints**: Autosaves progress every 100 leads to `.tmp/clean_leads_checkpoint.json`. Resumes automatically if interrupted.
+    -   **Checkpoints**: Autosaves progress every 100 leads to `.tmp/clean_leads_checkpoint_<PID>.json`. Resumes automatically if interrupted.
 5. **Export**: Saves the cleaned and validated leads to a **new Google Sheet**.
 
 ## Tools
@@ -39,6 +40,7 @@ source .venv/bin/activate
 python execution/clean_leads.py \
   --source-url "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit" \
   --output-sheet "Cleaned Leads" \
+  --sheet-name "Fixed Columns" \
   --folder-id "YOUR_FOLDER_ID" \
   --category "Plumber"
 ```
@@ -56,6 +58,7 @@ python execution/clean_leads.py \
 ### Options
 - `--source-url`: Full URL of the source Google Sheet.
 - `--output-sheet`: Name of the destination sheet.
+- `--sheet-name`: Name of the source sheet/tab to read from (optional).
 - `--category`: One or more keywords to filter the Category column (case-insensitive, OR logic).
 - `--folder-id`: Google Drive Folder ID for the output file (required for write access).
 - `--max-leads`: Limit number of leads to validate (useful for testing).

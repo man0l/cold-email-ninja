@@ -12,10 +12,11 @@ import sys
 import time
 import re
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 import requests
+from requests import exceptions as req_exc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Load environment variables
@@ -38,37 +39,64 @@ SCOPES = [
 ]
 
 # Checkpoint Handling
-CHECKPOINT_FILE = ".tmp/clean_leads_checkpoint.json"
+def build_checkpoint_file(source_url: str, sheet_name: Optional[str], categories: Optional[List[str]]) -> str:
+    """Build a stable checkpoint filename based on inputs."""
+    if '/d/' in source_url:
+        source_id = source_url.split('/d/')[1].split('/')[0]
+    else:
+        source_id = source_url
 
-def load_checkpoint() -> Dict[str, Any]:
+    normalized = [
+        source_id.strip(),
+        (sheet_name or "").strip().lower(),
+        "|".join(sorted([c.strip().lower() for c in (categories or [])]))
+    ]
+    raw_key = "clean_leads__" + "__".join(normalized)
+    safe_key = re.sub(r'[^a-z0-9_\-]+', '_', raw_key.lower())
+    return f".tmp/{safe_key}.json"
+
+def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
     """Load checkpoint data"""
-    if os.path.exists(CHECKPOINT_FILE):
+    if os.path.exists(checkpoint_file):
         try:
-            with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
-def save_checkpoint(data: Dict[str, Any]):
+def save_checkpoint(checkpoint_file: str, data: Dict[str, Any]):
     """Save checkpoint data"""
-    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-    with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+    os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
+    with open(checkpoint_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False)
 
-def clear_checkpoint():
-    if os.path.exists(CHECKPOINT_FILE):
+def clear_checkpoint(checkpoint_file: str):
+    if os.path.exists(checkpoint_file):
         try:
-            os.remove(CHECKPOINT_FILE)
+            os.remove(checkpoint_file)
         except:
             pass
 
-def print_progress(current, total, valid, width=40):
+def print_progress(current, total, valid, invalid_reasons, width=40):
     """Print a progress bar"""
     percent = float(current) / total
     bar_length = int(width * percent)
     bar = '█' * bar_length + '-' * (width - bar_length)
-    sys.stdout.write(f'\r[{bar}] {int(percent * 100)}% | Processed: {current}/{total} | Valid: {valid} ')
+    invalid_total = sum(invalid_reasons.values())
+    if invalid_total:
+        breakdown = ", ".join(
+            f"{reason}:{count}"
+            for reason, count in sorted(
+                invalid_reasons.items(), key=lambda item: (-item[1], item[0])
+            )
+        )
+        invalid_summary = f" | Invalid: {invalid_total} ({breakdown})"
+    else:
+        invalid_summary = " | Invalid: 0"
+    sys.stdout.write(
+        f'\r[{bar}] {int(percent * 100)}% | Processed: {current}/{total} | Valid: {valid}{invalid_summary} '
+    )
     sys.stdout.flush()
 
 def authenticate_google():
@@ -221,6 +249,22 @@ def clean_url(url: str) -> Optional[str]:
     except Exception:
         return None
 
+def normalize_url_key(url: str) -> str:
+    """Normalize URL into a stable host key (strip scheme + www)."""
+    if not url:
+        return ""
+    url = url.strip().lower()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc
+    except Exception:
+        host = url
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
 def get_column_value(lead: Dict[str, Any], possible_names: List[str]) -> str:
     """Get value from lead using strict case-insensitive exact matching first, then fuzzy"""
     # 1. Exact match
@@ -241,27 +285,67 @@ def get_column_value(lead: Dict[str, Any], possible_names: List[str]) -> str:
                  return str(lead[key])
     return ""
 
-def check_website(url: str, timeout: int = 15) -> bool:
-    """Check if website returns 200 OK"""
+def check_website(url: str, timeout: int = 15, max_retries: int = 2, backoff: float = 0.6) -> Tuple[bool, str]:
+    """Check if website returns 200 OK with reason if invalid.
+
+    Retries transient failures to reduce false negatives from throttling or flakiness.
+    """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    try:
-        response = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if response.status_code == 200:
-            return True
-        # Retry with GET if HEAD fails (some servers block HEAD)
-        if response.status_code in [405, 404, 403]: 
-             response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-             return response.status_code == 200
-        return False
-    except requests.RequestException:
-        return False
+    retryable_statuses = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+    urls_to_try = [url]
+    if url.startswith("https://"):
+        urls_to_try.append("http://" + url[len("https://"):])
+    elif url.startswith("http://"):
+        urls_to_try.append("https://" + url[len("http://"):])
+
+    last_reason = "request_error"
+
+    for candidate_url in urls_to_try:
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.head(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
+                status = response.status_code
+                if status == 200:
+                    return True, "ok"
+
+                # Retry with GET if HEAD fails (some servers block HEAD)
+                if status in [405, 404, 403] or status >= 400:
+                    response = requests.get(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
+                    status = response.status_code
+                    if status == 200:
+                        return True, "ok"
+
+                last_reason = f"http_{status}"
+
+                if status in retryable_statuses and attempt < max_retries:
+                    time.sleep(backoff * (2 ** attempt))
+                    continue
+                return False, last_reason
+            except req_exc.Timeout:
+                last_reason = "timeout"
+            except req_exc.SSLError:
+                last_reason = "ssl_error"
+            except req_exc.TooManyRedirects:
+                last_reason = "too_many_redirects"
+            except req_exc.ConnectionError:
+                last_reason = "connection_error"
+            except req_exc.RequestException:
+                last_reason = "request_error"
+
+            if attempt < max_retries:
+                time.sleep(backoff * (2 ** attempt))
+                continue
+            return False, last_reason
+
+    return False, last_reason
 
 def main():
     parser = argparse.ArgumentParser(description='Clean Leads - Filter and Validate')
     parser.add_argument('--source-url', required=True, help='Google Sheets URL')
     parser.add_argument('--output-sheet', required=True, help='Output Sheet/Tab Name')
+    parser.add_argument('--sheet-name', help='Source sheet/tab name to read from')
     parser.add_argument('--folder-id', help='Google Drive Folder ID (falls back to GOOGLE_DRIVE_FOLDER_ID env var)')
     parser.add_argument('--category', nargs='+', help='Category filter(s) - accepts multiple values (substring match, OR logic)')
     parser.add_argument('--max-leads', type=int, help='Maximum leads to validate (optional)')
@@ -272,10 +356,11 @@ def main():
     
     print("\n🧹 Clean Leads Tool")
     print("=" * 50)
+
     
     # 1. Load Data
     print(f"Loading from: {args.source_url}")
-    leads = load_from_google_sheets(args.source_url)
+    leads = load_from_google_sheets(args.source_url, args.sheet_name)
     if not leads:
         sys.exit(1)
     
@@ -330,9 +415,25 @@ def main():
     # 3. Validation Process (with Checkpoint)
     
     # Load checkpoint
-    checkpoint_data = load_checkpoint()
-    checked_stats = checkpoint_data.get('checked_urls', {}) # URL -> bool (valid/invalid)
+    checkpoint_file = build_checkpoint_file(args.source_url, args.sheet_name, args.category)
+    checkpoint_data = load_checkpoint(checkpoint_file)
+    checked_stats_raw = checkpoint_data.get('checked_urls', {}) # URL -> bool or dict
     restored_leads = checkpoint_data.get('valid_leads', [])
+
+    checked_stats: Dict[str, Dict[str, Any]] = {}
+    for url, value in checked_stats_raw.items():
+        if isinstance(value, dict):
+            valid = bool(value.get('valid'))
+            reason = value.get('reason') or ("ok" if valid else "unknown")
+        else:
+            valid = bool(value)
+            reason = "ok" if valid else "unknown"
+        key = normalize_url_key(url)
+        if not key:
+            continue
+        existing = checked_stats.get(key)
+        if not existing or (not existing["valid"] and valid):
+            checked_stats[key] = {"valid": valid, "reason": reason}
     
     # Map restored leads by URL for easy lookup - Wait, we can just look up validity in checked_stats
     # But checking 'checked_stats' is only for status. If valid, we need the lead object.
@@ -345,8 +446,9 @@ def main():
     # Identify what needs validation vs what is already done
     for lead in filtered_leads:
         url = lead.get('clean_website')
-        if url in checked_stats:
-            if checked_stats[url]:
+        key = normalize_url_key(url)
+        if key in checked_stats:
+            if checked_stats[key]["valid"]:
                 # Valid
                 final_valid_leads.append(lead)
             skipped_count += 1
@@ -364,11 +466,13 @@ def main():
         processed_new = 0
         valid_new = 0
 
+        invalid_reasons: Dict[str, int] = {}
+
         # Worker function
         def validate_lead(lead):
             url = lead.get('clean_website')
-            is_valid = check_website(url)
-            return lead, is_valid
+            is_valid, reason = check_website(url)
+            return lead, is_valid, reason
 
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             # We process in chunks to save checkpoints periodically
@@ -377,23 +481,28 @@ def main():
                 futures = {executor.submit(validate_lead, lead): lead for lead in batch}
                 
                 for future in as_completed(futures):
-                    lead, is_valid = future.result()
+                    lead, is_valid, reason = future.result()
                     url = lead.get('clean_website')
+                    key = normalize_url_key(url)
                     
                     processed_new += 1
                     
                     # Update stats
-                    checked_stats[url] = is_valid
+                    if key:
+                        checked_stats[key] = {"valid": is_valid, "reason": reason}
                     
                     if is_valid:
                         final_valid_leads.append(lead)
                         valid_new += 1
+                    else:
+                        bucket = reason or "unknown"
+                        invalid_reasons[bucket] = invalid_reasons.get(bucket, 0) + 1
                     
-                    print_progress(processed_new, total_to_validate, valid_new)
+                    print_progress(processed_new, total_to_validate, valid_new, invalid_reasons)
 
                 # Checkpoint every 100 *processed* leads
                 if (processed_new % 100 == 0) or (processed_new == total_to_validate):
-                    save_checkpoint({
+                    save_checkpoint(checkpoint_file, {
                         'checked_urls': checked_stats,
                         # We don't strictly need to save 'valid_leads' if we can reconstruct from source + checked_stats
                         # But if leads list changes (e.g. source sheet changes), 'valid_leads' in checkpoint might be stale.
@@ -429,9 +538,9 @@ def main():
     folder_id = args.folder_id or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
     save_to_google_sheets(final_valid_leads, args.output_sheet, folder_id, source_id)
     
-    # Clear checkpoint if we finished EVERYTHING (no leads left to validate)
+    # Clear checkpoint only after a successful full run.
     if total_to_validate == 0 or processed_new == total_to_validate:
-         clear_checkpoint()
+        clear_checkpoint(checkpoint_file)
 
 if __name__ == '__main__':
     try:
