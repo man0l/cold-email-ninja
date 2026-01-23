@@ -84,16 +84,7 @@ def print_progress(current, total, valid, invalid_reasons, width=40):
     bar_length = int(width * percent)
     bar = '█' * bar_length + '-' * (width - bar_length)
     invalid_total = sum(invalid_reasons.values())
-    if invalid_total:
-        breakdown = ", ".join(
-            f"{reason}:{count}"
-            for reason, count in sorted(
-                invalid_reasons.items(), key=lambda item: (-item[1], item[0])
-            )
-        )
-        invalid_summary = f" | Invalid: {invalid_total} ({breakdown})"
-    else:
-        invalid_summary = " | Invalid: 0"
+    invalid_summary = f" | Invalid: {invalid_total}"
     sys.stdout.write(
         f'\r[{bar}] {int(percent * 100)}% | Processed: {current}/{total} | Valid: {valid}{invalid_summary} '
     )
