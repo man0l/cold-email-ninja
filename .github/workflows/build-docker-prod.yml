@@ -55,3 +55,11 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/cold-email-ninja:prod
+
+      - name: Make GHCR package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X PATCH /user/packages/container/cold-email-ninja/visibility -f visibility=public
+
+      # Bump to trigger workflow
