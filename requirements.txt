@@ -4,5 +4,3 @@ google-api-python-client>=2.100.0
 google-auth>=2.23.0
 dnspython>=2.6.1
 PySocks>=1.7.1
-playwright
-playwright-stealth
