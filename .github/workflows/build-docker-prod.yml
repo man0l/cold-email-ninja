@@ -62,4 +62,4 @@ jobs:
         run: |
           gh api -X PATCH /user/packages/container/cold-email-ninja/visibility -f visibility=public
 
-      # Bump to trigger workflow
+      # Bump to trigger workflow (2)
