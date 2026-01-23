@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app
 COPY .env /app/.env
 
-CMD ["bash"]
+CMD ["python", "execution/idle.py"]
