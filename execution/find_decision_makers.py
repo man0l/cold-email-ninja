@@ -10,6 +10,7 @@ Waterfall logic:
 """
 
 import argparse
+import atexit
 import csv
 import json
 import os
@@ -43,6 +44,35 @@ SCOPES = [
 ]
 
 CHECKPOINT_FILE = ".tmp/find_decision_makers_checkpoint.json"
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> None:
+        for stream in self.streams:
+            stream.write(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        primary = self.streams[0] if self.streams else None
+        return bool(getattr(primary, "isatty", lambda: False)())
+
+
+def setup_logging(log_file: str) -> None:
+    if not log_file:
+        return
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    log_handle = open(log_file, "w", encoding="utf-8")
+    atexit.register(log_handle.close)
+    sys.stdout = Tee(sys.stdout, log_handle)
+    sys.stderr = Tee(sys.stderr, log_handle)
 
 OPENAI_RATE_LIMIT_LOCK = threading.Lock()
 OPENAI_LAST_CALL = 0.0
@@ -1126,9 +1156,13 @@ def main():
     parser.add_argument("--folder-id", help="Google Drive folder ID for output (optional)")
     parser.add_argument("--skip-dataforseo", action="store_true", help="Skip DataForSEO Google search")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    parser.add_argument("--log-file", help="Write console output to a log file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
+
+    if args.log_file:
+        setup_logging(args.log_file)
 
     print("\n👤 Find Decision Makers")
     print("=" * 50)

@@ -107,6 +107,7 @@ python execution/find_decision_makers.py \
 - `--include-existing`: Process leads that already have decision maker fields
 - `--skip-first 1000`: Skip the first N leads from the source
 - `--skip-dataforseo`: Skip DataForSEO Google search for LinkedIn company pages
+- `--log-file ".tmp/find_decision_makers.log"`: Save console output to a log file
 - `--verbose`: Log per-lead decisions
 
 ## Output Schema (Added Columns)
