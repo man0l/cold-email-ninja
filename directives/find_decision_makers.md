@@ -126,5 +126,5 @@ python execution/find_decision_makers.py \
 
 ## Notes
 - All intermediate files must live in `.tmp/`
-- Checkpoint file: `.tmp/find_decision_makers_checkpoint.json`
+- Checkpoint file naming should be input-derived (like `clean_leads`), e.g. `.tmp/find_decision_makers__<source_id>__<sheet_name>__<skip_first>__<include_existing>.json`
 - Similar output layout to the provided Google Sheet template
