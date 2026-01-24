@@ -40,8 +40,8 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
 - A new worksheet in the source Google Sheets file with the Apollo-formatted data.
 - **Logic**:
     - **One lead per company**: Prioritizes `primary_email`. If missing, uses the first available email.
-    - **Field Mapping**:
-        - `decision_maker_name` is split into `first_name` and `last_name` (falls back to `full_name` if missing).
+   - **Field Mapping**:
+       - `decision_maker_name` is split into `first_name` and `last_name` (falls back to `full_name`/`person_name` if missing).
         - `company_country` is normalized to "United States".
         - `decision_maker_title` is used for `job_title` (falls back to other title fields).
     - **Email optional**: Rows are retained even if no email exists.
@@ -53,3 +53,4 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
 - **Headerless tabs**: If a sheet has no header row, it must be fixed upstream before conversion.
 - **Sheet names with special characters**: Sheet tabs with spaces/parentheses require quoting in A1 ranges (e.g., `'Some Sheet (2026)'!A:ZZ`). The converter now handles this automatically.
 - **Range parsing failures**: If Google Sheets rejects a quoted A1 range, the converter retries with an unquoted range before failing.
+- **Name field is company name**: The generic `name` field is treated as a company name and is not used for person name or company name mapping.

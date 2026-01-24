@@ -344,7 +344,7 @@ def convert_lead(lead: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
     full_name = pick_value(
         lead,
         key_map,
-        ["decision_maker_name", "full_name", "fullName", "person_name", "contact_name", "name"],
+        ["decision_maker_name", "full_name", "fullName", "person_name", "contact_name"],
     )
     first_name, last_name = split_full_name(full_name)
 
