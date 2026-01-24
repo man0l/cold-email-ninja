@@ -54,3 +54,4 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
 - **String-encoded fields**: When data comes from Google Sheets, fields like `socials` and `emails_raw` may be stored as string representations of dictionaries/lists. The script now handles both string and native Python types using `ast.literal_eval()`.
 - **Field variations**: The script checks multiple field name variations (e.g., `social_linkedin`, `company_linkedin`) as fallbacks.
 - **Headerless tabs**: Some sheets store data rows without a header row (e.g., a filtered "first 100" tab). In that case, pull headers from a source sheet that has them and rebuild each row by index before converting, otherwise every field maps to empty values.
+- **Sheet names with special characters**: Sheet tabs with spaces/parentheses require quoting in A1 ranges (e.g., `'Emails Sample 20 (Jan 24 2026)'!A:ZZ`). The converter now handles this automatically.

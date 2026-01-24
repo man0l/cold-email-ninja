@@ -83,9 +83,16 @@ def resolve_sheet_name(
     return None
 
 
+def format_sheet_range(sheet_name: Optional[str]) -> str:
+    if not sheet_name:
+        return "A:ZZ"
+    safe_name = sheet_name.replace("'", "''")
+    return f"'{safe_name}'!A:ZZ"
+
+
 def load_sheet_rows(service, spreadsheet_id: str, sheet_name: Optional[str]) -> List[List[str]]:
     try:
-        range_name = f"{sheet_name}!A:ZZ" if sheet_name else "A:ZZ"
+        range_name = format_sheet_range(sheet_name)
         result = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range=range_name,
