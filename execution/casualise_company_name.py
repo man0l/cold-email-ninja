@@ -11,7 +11,8 @@ import re
 import sys
 import time
 import threading
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -419,16 +420,37 @@ def process_json_file(
     output_field: str,
     verbose: bool,
     show_progress: bool,
+    workers: int,
 ) -> None:
     records = load_json_file(source_file)
-    for idx, record in enumerate(records, start=1):
-        company = extract_company_name(record)
-        if company:
-            if verbose:
-                print(f"[{idx}/{len(records)}] {company}", flush=True)
-            record[output_field] = casualise_name(company, verbose=verbose)
-        if show_progress and not verbose:
-            render_progress(idx, len(records), prefix="Processing ")
+    companies = [extract_company_name(record) for record in records]
+    if workers < 1:
+        workers = 1
+    if workers == 1:
+        for idx, (record, company) in enumerate(zip(records, companies), start=1):
+            if company:
+                if verbose:
+                    print(f"[{idx}/{len(records)}] {company}", flush=True)
+                record[output_field] = casualise_name(company, verbose=verbose)
+            if show_progress and not verbose:
+                render_progress(idx, len(records), prefix="Processing ")
+    else:
+        def process_company(company: Optional[str]) -> Optional[str]:
+            if not company:
+                return None
+            return casualise_name(company, verbose=verbose)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(process_company, companies)
+            for idx, (record, company, result) in enumerate(
+                zip(records, companies, results), start=1
+            ):
+                if company and result:
+                    if verbose:
+                        print(f"[{idx}/{len(records)}] {company}", flush=True)
+                    record[output_field] = result
+                if show_progress and not verbose:
+                    render_progress(idx, len(records), prefix="Processing ")
     save_json(records, output_file)
     print(f"✅ Saved casualised names to {output_file}")
 
@@ -455,6 +477,7 @@ def update_google_sheet(
     verbose: bool,
     show_progress: bool,
     checkpoint_id: Optional[str],
+    workers: int,
 ) -> None:
     creds = authenticate_google()
     service = build("sheets", "v4", credentials=creds)
@@ -545,6 +568,7 @@ def update_google_sheet(
             last_written_row = start + len(values) - 1
             pending_rows = pending_rows[len(values) :]
 
+    rows_to_process: List[Tuple[int, str]] = []
     for row_idx, row in enumerate(data_rows, start=1):
         if row_idx <= start_row:
             continue
@@ -552,30 +576,72 @@ def update_google_sheet(
         company = row[source_idx] if source_idx < len(row) else ""
         if verbose:
             print(f"[{row_idx}/{total_rows}] {company}", flush=True)
-        pending_rows.append((row_idx, casualise_name(company, verbose=verbose)))
-        processed_since_checkpoint += 1
+        rows_to_process.append((row_idx, company))
 
-        if show_progress and not verbose:
-            render_progress(row_idx, total_rows, prefix="Processing ")
+    if workers < 1:
+        workers = 1
 
-        flush_pending_rows()
+    def process_company(item: Tuple[int, str]) -> str:
+        _, company = item
+        if not company:
+            return ""
+        return casualise_name(company, verbose=verbose)
 
-        if processed_since_checkpoint >= 10:
-            save_checkpoint(
-                checkpoint_file,
-                {
-                    "spreadsheet_id": spreadsheet_id,
-                    "sheet_name": resolved_sheet,
-                    "column_name": column_name or "",
-                    "output_column": output_column,
-                    "last_processed_row": row_idx,
-                    "last_written_row": last_written_row,
-                    "pending_rows": [
-                        {"row": row, "value": value} for row, value in pending_rows
-                    ],
-                },
-            )
-            processed_since_checkpoint = 0
+    if workers == 1:
+        results = map(process_company, rows_to_process)
+        for (row_idx, _), casualised in zip(rows_to_process, results):
+            pending_rows.append((row_idx, casualised))
+            processed_since_checkpoint += 1
+
+            if show_progress and not verbose:
+                render_progress(row_idx, total_rows, prefix="Processing ")
+
+            flush_pending_rows()
+
+            if processed_since_checkpoint >= 10:
+                save_checkpoint(
+                    checkpoint_file,
+                    {
+                        "spreadsheet_id": spreadsheet_id,
+                        "sheet_name": resolved_sheet,
+                        "column_name": column_name or "",
+                        "output_column": output_column,
+                        "last_processed_row": row_idx,
+                        "last_written_row": last_written_row,
+                        "pending_rows": [
+                            {"row": row, "value": value} for row, value in pending_rows
+                        ],
+                    },
+                )
+                processed_since_checkpoint = 0
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(process_company, rows_to_process)
+            for (row_idx, _), casualised in zip(rows_to_process, results):
+                pending_rows.append((row_idx, casualised))
+                processed_since_checkpoint += 1
+
+                if show_progress and not verbose:
+                    render_progress(row_idx, total_rows, prefix="Processing ")
+
+                flush_pending_rows()
+
+                if processed_since_checkpoint >= 10:
+                    save_checkpoint(
+                        checkpoint_file,
+                        {
+                            "spreadsheet_id": spreadsheet_id,
+                            "sheet_name": resolved_sheet,
+                            "column_name": column_name or "",
+                            "output_column": output_column,
+                            "last_processed_row": row_idx,
+                            "last_written_row": last_written_row,
+                            "pending_rows": [
+                                {"row": row, "value": value} for row, value in pending_rows
+                            ],
+                        },
+                    )
+                    processed_since_checkpoint = 0
 
     flush_pending_rows()
     if pending_rows:
@@ -627,6 +693,12 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print name transformations")
     parser.add_argument("--no-progress", action="store_false", dest="progress", help="Disable progress bar")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("OPENAI_MAX_CONCURRENCY", "2")),
+        help="Number of worker threads",
+    )
+    parser.add_argument(
         "--checkpoint-id",
         help="Stable checkpoint id to resume the same run (default: pid-based unique file)",
     )
@@ -644,6 +716,7 @@ def main():
             args.output_field,
             args.verbose,
             args.progress,
+            args.workers,
         )
         return
 
@@ -657,6 +730,7 @@ def main():
             args.verbose,
             args.progress,
             args.checkpoint_id,
+            args.workers,
         )
         return
 
