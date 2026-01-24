@@ -235,6 +235,12 @@ def clean_url(url: str) -> Optional[str]:
     
     try:
         parsed = urlparse(url)
+        host = parsed.netloc.strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        # Basic hostname regex to block malformed entries like ".example.com"
+        if not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", host):
+            return None
         # Reconstruct only scheme + netloc
         return f"{parsed.scheme}://{parsed.netloc}"
     except Exception:
