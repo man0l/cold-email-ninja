@@ -1248,6 +1248,8 @@ def main():
         key = get_lead_key(lead)
         if key and key in processed_keys:
             return True
+        if has_decision_maker(lead):
+            return True
         return was_processed(lead)
 
     if args.include_existing:
