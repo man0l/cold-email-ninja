@@ -162,129 +162,89 @@ def clear_checkpoint():
             pass
 
 
-def save_to_google_sheets(leads: List[Dict[str, Any]], sheet_name: str, spreadsheet_id: Optional[str] = None, folder_id: Optional[str] = None):
-    """Save leads to a Google Sheet (adds tab if ID provided, else creates new in folder if provided)"""
+def _get_sheet_properties(service, spreadsheet_id: str, sheet_name: str) -> Optional[Dict[str, Any]]:
+    """Fetch sheet properties by title"""
+    try:
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"
+        ).execute()
+        for sheet in spreadsheet.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == sheet_name:
+                return props
+    except HttpError:
+        pass
+    return None
+
+
+def _resize_sheet_if_needed(service, spreadsheet_id: str, sheet_id: int, row_count: int, column_count: int):
+    """Ensure sheet has enough rows/columns for data"""
+    if not sheet_id:
+        return
+    body = {
+        "requests": [{
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {
+                        "rowCount": row_count,
+                        "columnCount": column_count
+                    }
+                },
+                "fields": "gridProperties(rowCount,columnCount)"
+            }
+        }]
+    }
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=body
+    ).execute()
+
+
+def save_to_google_sheets(leads: List[Dict[str, Any]], sheet_name: str, spreadsheet_id: str):
+    """Save leads to a new sheet (tab) in an existing spreadsheet"""
     if not GOOGLE_AVAILABLE:
         print("❌ Error: Google Sheets libraries not available")
         sys.exit(1)
     
     creds = authenticate_google()
     service = build('sheets', 'v4', credentials=creds)
-    drive_service = build('drive', 'v3', credentials=creds)
-    
-    # Logic:
-    # 1. If folder_id provided -> Create NEW spreadsheet in that folder (ignore source spreadsheet_id)
-    # 2. If spreadsheet_id provided -> Append tab to that spreadsheet
-    # 3. Else -> Create NEW spreadsheet in root (may fail)
-    
-    target_spreadsheet_id = spreadsheet_id
-    
-    if folder_id:
-        print(f"  📂 Creating new spreadsheet in folder: {folder_id}")
-        try:
-            file_metadata = {
-                'name': sheet_name,
-                'mimeType': 'application/vnd.google-apps.spreadsheet',
-                'parents': [folder_id]
-            }
-            # Create file using Drive API first to place in folder
-            file = drive_service.files().create(
-                body=file_metadata, 
-                fields='id',
-                supportsAllDrives=True
-            ).execute()
-            target_spreadsheet_id = file.get('id')
-            print(f"  ✅ Created new spreadsheet: {target_spreadsheet_id}")
-            
-            # Now we treat it as an existing spreadsheet to write to
-            # But we might need to rename the first sheet or add header?
-            # The 'values.update' below will handle writing to 'Sheet1!A1' or similar.
-            # Usually new sheets have 'Sheet1'. Our sheet_name arg is used for filename here.
-            # Let's write to the first sheet.
-            
-            # But wait, subsequent code uses `sheet_name!A1`.
-            # If we created a new file, the default sheet is "Sheet1".
-            # We should probably just use "Sheet1" or rename it.
-            # To keep it simple, let's use "Sheet1" for the range if we just created it.
-            # Or rename the sheet.
-            
-            # Let's stick to the plan: if we created a new file, target_spreadsheet_id is set.
-            # The writing logic below uses `sheet_name`.
-            # If `sheet_name` is "Enriched Leads", we should write to "Enriched Leads!A1".
-            # But the new sheet has "Sheet1".
-            # We should batchUpdate to rename "Sheet1" to `sheet_name`?
-            # Or just write to "Sheet1" and rename the file (which we did).
-            
-            # Use 'Sheet1' for range if we just created it?
-            # Actually, `save_to_google_sheets` takes `sheet_name` which is used for both Filename (in create) and Tab Name (in append).
-            # This is slightly conflated.
-            # Let's rename "Sheet1" to match `sheet_name` if possible, or just accept "Sheet1".
-            
-            # Simpler: just use `target_spreadsheet_id` and proceed.
-            # If the range is `sheet_name!A1`, it will fail if tab doesn't exist.
-            # So we MUST add the tab or rename.
-            
-            # Let's add the tab logic below.
-            # If we just created it, it has Sheet1. We want `sheet_name`.
-            # We can run the "addSheet" logic?
-            pass
+    if not spreadsheet_id:
+        print("❌ Error: Missing spreadsheet ID for output sheet")
+        sys.exit(1)
 
-        except HttpError as e:
-            print(f"❌ Error creating file in folder: {e}")
-            return
-            
-    elif target_spreadsheet_id:
-        # Append mode logic (same as before)
-        pass
-    else:
-        # Create in root (fallback)
-        pass
-
-    # Ensure tab exists (for new or existing)
-    if target_spreadsheet_id:
-        # Try to add the sheet (tab)
-        # If we just created the file, it has "Sheet1".
-        # If we want a tab named `sheet_name`, we add it.
-        # If `sheet_name` == "Sheet1", it exists.
-        
-        # If we created a new file, maybe we ignore `sheet_name` for the tab and just use "Sheet1"?
-        # But if we append, we need unique name.
-        
-        # Let's try to add the sheet. If it exists, we catch error.
-        try:
-             body = {
-                'requests': [{
-                    'addSheet': {
-                        'properties': {
-                            'title': sheet_name
-                        }
+    # Ensure tab exists in the existing spreadsheet
+    sheet_id = None
+    try:
+        body = {
+            'requests': [{
+                'addSheet': {
+                    'properties': {
+                        'title': sheet_name
                     }
-                }]
-            }
-             service.spreadsheets().batchUpdate(
-                spreadsheetId=target_spreadsheet_id,
-                body=body
-            ).execute()
-             print(f"  ✅ Added tab '{sheet_name}'")
-        except HttpError as e:
-            if 'already exists' in str(e):
-                pass # It exists, we will write to it
-            else:
-                # If we created new file, maybe we just write to Sheet1?
-                # If `sheet_name` is different from "Sheet1", we added it above.
-                pass
-    else:
-        # Fallback creation in root (if folder_id not provided and no source_id)
-         try:
-            spreadsheet = {
-                'properties': {'title': sheet_name}
-            }
-            spreadsheet = service.spreadsheets().create(body=spreadsheet).execute()
-            target_spreadsheet_id = spreadsheet['spreadsheetId']
-            print(f"  ✅ Created new spreadsheet in root: {target_spreadsheet_id}")
-         except HttpError as e:
-            print(f"❌ Error creating new spreadsheet: {e}")
+                }
+            }]
+        }
+        response = service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=body
+        ).execute()
+        print(f"  ✅ Added tab '{sheet_name}'")
+        replies = response.get("replies", [])
+        if replies:
+            sheet_id = replies[0].get("addSheet", {}).get("properties", {}).get("sheetId")
+    except HttpError as e:
+        if 'already exists' in str(e):
+            print(f"  ⚠️ Tab '{sheet_name}' already exists, writing to it")
+        else:
+            print(f"❌ Error adding tab: {e}")
             return
+    
+    if sheet_id is None:
+        props = _get_sheet_properties(service, spreadsheet_id, sheet_name)
+        if props:
+            sheet_id = props.get("sheetId")
 
     # Prepare data
     if not leads:
@@ -297,50 +257,43 @@ def save_to_google_sheets(leads: List[Dict[str, Any]], sheet_name: str, spreadsh
         row = [str(lead.get(h, '')) for h in headers]
         rows.append(row)
     
-    # Chunked upload using append to automatically add rows
+    # Resize sheet to fit all data (avoid grid limits errors)
+    desired_rows = len(rows)
+    desired_cols = len(headers)
+    current_props = _get_sheet_properties(service, spreadsheet_id, sheet_name)
+    if current_props:
+        current_rows = current_props.get("gridProperties", {}).get("rowCount", 0)
+        current_cols = current_props.get("gridProperties", {}).get("columnCount", 0)
+    else:
+        current_rows = 0
+        current_cols = 0
+    target_rows = max(current_rows, desired_rows)
+    target_cols = max(current_cols, desired_cols)
+    _resize_sheet_if_needed(service, spreadsheet_id, sheet_id, target_rows, target_cols)
+    
+    # Chunked upload using update to write from A1
     chunk_size = 2000
     total_rows = len(rows)
     print(f"  📤 Uploading {total_rows} rows in chunks of {chunk_size}...")
-    
-    # First chunk includes headers, so we can just append everything if we start fresh.
-    # But wait, save_to_google_sheets prepares 'rows' which INCLUDES headers at rows[0].
-    # So we just append all chunks sequentially.
-    
+
     for i in range(0, total_rows, chunk_size):
         chunk = rows[i:i + chunk_size]
-        
-        # We use append, so we target the sheet, not specific rows
-        range_name = f"'{sheet_name}'!A1"
+        start_row = i + 1
+        end_row = i + len(chunk)
+        range_name = f"'{sheet_name}'!A{start_row}"
         body = {'values': chunk}
-        
         try:
-            service.spreadsheets().values().append(
-                spreadsheetId=target_spreadsheet_id,
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
                 range=range_name,
                 valueInputOption='RAW',
-                insertDataOption='INSERT_ROWS',
                 body=body
             ).execute()
-            print(f"    ✓ Appended rows {i+1}-{i+len(chunk)}")
+            print(f"    ✓ Wrote rows {start_row}-{end_row}")
         except HttpError as e:
-            # Fallback for first chunk only
-            if i == 0 and "Unable to parse range" in str(e):
-                 print(f"    ⚠️ Retrying chunk 1 with 'Sheet1'...")
-                 try:
-                    service.spreadsheets().values().append(
-                        spreadsheetId=target_spreadsheet_id,
-                        range="Sheet1!A1",
-                        valueInputOption='RAW',
-                        insertDataOption='INSERT_ROWS',
-                        body=body
-                    ).execute()
-                    print(f"    ✓ Appended rows {i+1}-{i+len(chunk)} to Sheet1")
-                 except Exception as ex:
-                     print(f"    ❌ Error appending chunk {i}: {ex}")
-            else:
-                 print(f"    ❌ Error appending chunk {i}: {e}")
-                 
-    print(f"\n✅ Saved to Google Sheet: https://docs.google.com/spreadsheets/d/{target_spreadsheet_id}")
+            print(f"    ❌ Error writing chunk {i}: {e}")
+
+    print(f"\n✅ Saved to Google Sheet: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
     
 
 
@@ -365,6 +318,12 @@ def has_email(lead: Dict[str, Any]) -> bool:
         if lead.get(field, '').strip():
             return True
     return False
+
+
+def ensure_heading_column(leads: List[Dict[str, Any]]):
+    """Ensure each lead has a heading column"""
+    for lead in leads:
+        lead.setdefault('heading', '')
 
 
 def scrape_contacts(website_url: str, api_key: str, verbose: bool = False) -> Dict[str, Any]:
@@ -508,6 +467,10 @@ def main():
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     
     args = parser.parse_args()
+
+    if args.output_sheet and not args.source_url:
+        print("❌ Error: --output-sheet requires --source-url (new sheet is added to existing spreadsheet)")
+        sys.exit(1)
     
     # Get API key
     api_key = os.getenv('OPENWEBNINJA_API_KEY')
@@ -520,20 +483,6 @@ def main():
     print("\n📧 Find Emails Tool")
     print("=" * 50)
     
-    if args.source_file:
-        print(f"\n📂 Loading from file: {args.source_file}")
-        if args.source_file.endswith('.csv'):
-            leads = load_from_csv(args.source_file)
-        elif args.source_file.endswith('.json'):
-            leads = load_from_json(args.source_file)
-        else:
-            print("❌ Error: File must be .csv or .json")
-            sys.exit(1)
-    else:
-        print(f"\n📊 Loading from Google Sheets: {args.source_url}")
-        leads = load_from_google_sheets(args.source_url, args.sheet_name)
-    
-    # leads variable will hold the data
     leads = None
     
     # Check for checkpoint
@@ -563,6 +512,8 @@ def main():
     if not leads:
         print("❌ No leads found")
         sys.exit(1)
+
+    ensure_heading_column(leads)
     
     # Filter leads
     if args.include_existing:
@@ -670,17 +621,16 @@ def main():
         # 1. If folder_id -> Create new file there (pass folder_id)
         # 2. If source_url -> Append to it (pass id)
 
-        # Use folder_id from args, or fall back to env var
-        folder_id = args.folder_id or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
-
         source_id = None
-        if not folder_id:  # Only use source_id if NOT creating new file
-            if args.source_url and '/d/' in args.source_url:
-                source_id = args.source_url.split('/d/')[1].split('/')[0]
-            elif args.source_url:
-                source_id = args.source_url
+        if args.source_url and '/d/' in args.source_url:
+            source_id = args.source_url.split('/d/')[1].split('/')[0]
+        elif args.source_url:
+            source_id = args.source_url
 
-        save_to_google_sheets(leads_to_process, args.output_sheet, source_id, folder_id)
+        if args.folder_id or os.getenv('GOOGLE_DRIVE_FOLDER_ID'):
+            print("⚠️  Ignoring --folder-id/GOOGLE_DRIVE_FOLDER_ID for output-sheet (new tab only).")
+
+        save_to_google_sheets(leads, args.output_sheet, source_id)
     
     # Clear checkpoint on success
     clear_checkpoint()

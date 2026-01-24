@@ -9,7 +9,7 @@ Find and extract email addresses, phone numbers, and social media contacts from 
   - `source-url`: Full URL of a Google Sheet
 - **Output Destination**: ONE of the following:
   - `output`: Path for JSON output
-  - `output-sheet`: Name of the new Google Sheet to create
+  - `output-sheet`: Name of the new sheet (tab) to create in the existing Google Sheet
 - **Folder ID** (Optional): `--folder-id` to create the sheet in a specific Drive folder. Falls back to `GOOGLE_DRIVE_FOLDER_ID` env var if not specified.
 - **Max Leads** (Optional): Limit validation to N leads (Default: 100)
   - ⚠️ Each API call costs credits, so this limit prevents accidental overspending
@@ -35,14 +35,14 @@ Find and extract email addresses, phone numbers, and social media contacts from 
    - Phone numbers
    - Social media profile URLs (Facebook, Instagram, TikTok, LinkedIn, Twitter, GitHub, YouTube, Pinterest, Snapchat)
 8. **Checkpoints**: Automatically saves progress to a single checkpoint file (`.tmp/find_emails_checkpoint.json`) every 10 leads. Allows resuming from interruption. Checkpoint is deleted on success.
-9. **Output**: Exports the final result to a **new Google Sheet** (or file) that includes all original columns plus new columns for **found emails**, phones, and social media profiles.
+9. **Output**: Exports the final result to a **new sheet (tab)** in the existing Google Sheet (or file) that includes all original columns plus new columns for **Heading**, **found emails**, phones, and social media profiles.
 
 ## Tools
 - `execution/find_emails.py` - Email and contact enrichment script using OpenWeb Ninja API
 
 ## Output
 - **If Source is CSV/JSON**: A new JSON file containing leads with enriched contact data.
-- **If Source is Google Sheet**: A **new sheet/spreadsheet** with enriched lead data.
+- **If Source is Google Sheet**: A **new sheet (tab)** in the existing spreadsheet with enriched lead data.
 
 ## Safety Rules
 
@@ -57,13 +57,13 @@ Find and extract email addresses, phone numbers, and social media contacts from 
 
 > [!WARNING]
 > **NEVER OVERWRITE DATA**
-> - Always create a **NEW** file or **NEW** sheet for the enriched output
+> - Always create a **NEW** file or **NEW** sheet (tab) in the same spreadsheet for the enriched output
 > - Do not use the same filename for input and output
 > - Preserve all original lead fields
 
 ## Instructions
 
-### Option 1: Enrich from Google Sheet → New Google Sheet (Recommended)
+### Option 1: Enrich from Google Sheet → New Sheet (Recommended)
 
 ```bash
 source .venv/bin/activate
@@ -93,7 +93,7 @@ python execution/find_emails.py \
   --max-leads 100
 ```
 
-### Option 4: Enrich from CSV → New Google Sheet
+### Option 4: Enrich from CSV → New Sheet (Tab)
 
 ```bash
 source .venv/bin/activate
@@ -199,6 +199,7 @@ Response format:
 ```
 
 The script enriches leads with:
+- `heading`: Short heading/title for the row (used as the sheet column header field)
 - `email`: Primary email address (first from the list)
 - `emails`: All found email addresses (array)
 - `phone`: Primary phone number (first from the list)

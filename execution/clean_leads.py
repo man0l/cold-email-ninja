@@ -38,6 +38,8 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+HOSTNAME_REGEX = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+
 # Checkpoint Handling
 def build_checkpoint_file(source_url: str, sheet_name: Optional[str], categories: Optional[List[str]]) -> str:
     """Build a stable checkpoint filename based on inputs."""
@@ -225,6 +227,18 @@ def save_to_google_sheets(leads: List[Dict[str, Any]], sheet_name: str, folder_i
     
     print(f"\n✅ Saved to Google Sheet: https://docs.google.com/spreadsheets/d/{target_spreadsheet_id}")
 
+def normalize_host(host: str) -> str:
+    host = host.strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+def is_valid_host(host: str) -> bool:
+    if not host:
+        return False
+    host = normalize_host(host)
+    return bool(HOSTNAME_REGEX.fullmatch(host))
+
 def clean_url(url: str) -> Optional[str]:
     """Clean and normalize URL to root domain"""
     if not url:
@@ -236,13 +250,11 @@ def clean_url(url: str) -> Optional[str]:
     try:
         parsed = urlparse(url)
         host = parsed.netloc.strip().lower()
-        if host.startswith("www."):
-            host = host[4:]
         # Basic hostname regex to block malformed entries like ".example.com"
-        if not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", host):
+        if not is_valid_host(host):
             return None
-        # Reconstruct only scheme + netloc
-        return f"{parsed.scheme}://{parsed.netloc}"
+        # Reconstruct only scheme + normalized host
+        return f"{parsed.scheme}://{normalize_host(host)}"
     except Exception:
         return None
 
@@ -287,6 +299,9 @@ def check_website(url: str, timeout: int = 15, max_retries: int = 2, backoff: fl
 
     Retries transient failures to reduce false negatives from throttling or flakiness.
     """
+    if not url:
+        return False, "invalid_url"
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
@@ -300,6 +315,15 @@ def check_website(url: str, timeout: int = 15, max_retries: int = 2, backoff: fl
     last_reason = "request_error"
 
     for candidate_url in urls_to_try:
+        try:
+            parsed = urlparse(candidate_url)
+            if not is_valid_host(parsed.netloc):
+                last_reason = "invalid_url"
+                continue
+        except Exception:
+            last_reason = "invalid_url"
+            continue
+
         for attempt in range(max_retries + 1):
             try:
                 response = requests.head(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
@@ -330,6 +354,8 @@ def check_website(url: str, timeout: int = 15, max_retries: int = 2, backoff: fl
                 last_reason = "connection_error"
             except req_exc.RequestException:
                 last_reason = "request_error"
+            except Exception:
+                last_reason = "invalid_url"
 
             if attempt < max_retries:
                 time.sleep(backoff * (2 ** attempt))
