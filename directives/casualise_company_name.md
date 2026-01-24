@@ -3,16 +3,20 @@
 ## Goal
 Shorten company names to their casual, conversational form by removing common suffixes and unnecessary words. This makes company names more approachable and natural-sounding in cold outreach emails.
 
+Use `gpt-5-nano` to decide the best shortened name according to the rules below.
+
 ## Inputs
 - **Company Name**: The full, formal company name (e.g., "XYZ Agency", "Love Mayo Inc.")
+  - Primary field expected in Apollo exports: `company_name`
 
 ## Algorithm
 1. **Identify Core Name**: Extract the main brand/company name before common suffixes
-2. **Remove Suffixes**: Strip away common business entity markers and descriptors:
+2. **Shorten Aggressively**: Shorten the company name wherever possible (say, "XYZ" instead of "XYZ Agency"). More examples: "Love AMS" instead of "Love AMS Professional Services", "Love Mayo" instead of "Love Mayo Inc."
+3. **Remove Suffixes**: Strip away common business entity markers and descriptors:
    - Legal entity types: "Inc.", "Inc", "LLC", "Ltd", "Limited", "Corp", "Corporation", "Co.", "Company"
    - Business descriptors: "Agency", "Professional Services", "Services", "Group", "Partners", "Consulting", "Solutions", "Technologies", "Tech", "Media", "Studio", "Studios", "Productions", "Digital"
-3. **Preserve Brand Identity**: Keep the core brand name intact (e.g., "Love AMS" stays "Love AMS", not just "Love")
-4. **Handle Edge Cases**:
+4. **Preserve Brand Identity**: Keep the core brand name intact (e.g., "Love AMS" stays "Love AMS", not just "Love")
+5. **Handle Edge Cases**:
    - If the entire name is a descriptor (e.g., "The Agency"), keep it as-is
    - If removing suffixes leaves less than 2 characters, keep the original
    - Preserve acronyms and intentional capitalization
@@ -26,6 +30,9 @@ Shorten company names to their casual, conversational form by removing common su
 - "Digital Media Studios" → "Digital Media"
 - "Acme Corporation" → "Acme"
 - "The Creative Group" → "The Creative Group" (or "Creative" if removing "The" and "Group")
+- "AARON FLINT BUILDERS" → "Aaron Flint"
+- "Westview Construction" → "Westview"
+- "Redemption Custom Builders LLC" → "Redemption"
 
 ## Tools
 - `execution/casualise_company_name.py` - Main casualization script
@@ -53,13 +60,20 @@ Shorten company names to their casual, conversational form by removing common su
 ```bash
 .venv/bin/python execution/casualise_company_name.py \
   --source-url "https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit" \
-  --column "Company Name" \
+  --column "company_name" \
   --output-column "Casual Name"
 ```
 
+### Checkpoints & Resume (Sheets)
+- Creates a lightweight checkpoint every 10 rows in `.tmp/` with a filename that includes the spreadsheet id (and a unique suffix)
+- The checkpoint stores the actual pending row data so resume uses the checkpoint, not the sheet
+- Safe to re-run; it resumes from the last processed row if the sheet/columns match
+- Writes results back to the sheet in batches of 100 rows
+- To resume a specific run, pass `--checkpoint-id "my_run"` so the same checkpoint file is reused
+
 ## Field Mapping
 The script looks for company names in the following fields (in order of priority):
-- `companyName`, `company_name`, `Company Name`
+- `company_name`, `companyName`, `Company Name`
 - `name`, `Name`
 - `business_name`, `Business Name`
 
