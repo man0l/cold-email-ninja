@@ -34,10 +34,8 @@ SCOPES = [
 ]
 
 DEFAULT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-DEFAULT_HEADERS_URL = (
-    "https://docs.google.com/spreadsheets/d/1B0dlnl-76PhdpYn5vgwI_m1KNL01zgyUzF2FsjMzDIA/edit"
-)
-DEFAULT_HEADERS_SHEET = "Emails Sample 20 (Jan 24 2026)"
+DEFAULT_HEADERS_URL = None
+DEFAULT_HEADERS_SHEET = None
 
 
 def authenticate_google():
@@ -91,14 +89,24 @@ def format_sheet_range(sheet_name: Optional[str]) -> str:
 
 
 def load_sheet_rows(service, spreadsheet_id: str, sheet_name: Optional[str]) -> List[List[str]]:
+    range_name = format_sheet_range(sheet_name)
     try:
-        range_name = format_sheet_range(sheet_name)
         result = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range=range_name,
         ).execute()
         return result.get("values", [])
     except HttpError as e:
+        if sheet_name and "Unable to parse range" in str(e):
+            fallback_range = f"{sheet_name}!A:ZZ"
+            try:
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=fallback_range,
+                ).execute()
+                return result.get("values", [])
+            except HttpError:
+                pass
         print(f"❌ Error accessing Google Sheets: {e}")
         sys.exit(1)
 
@@ -333,13 +341,17 @@ def extract_linkedin(value: Any) -> str:
 def convert_lead(lead: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
     key_map = build_key_map(lead)
 
-    full_name = pick_value(lead, key_map, ["full_name", "fullName", "person_name", "contact_name", "name"])
+    full_name = pick_value(
+        lead,
+        key_map,
+        ["decision_maker_name", "full_name", "fullName", "person_name", "contact_name", "name"],
+    )
     first_name, last_name = split_full_name(full_name)
 
     job_title = pick_value(
         lead,
         key_map,
-        ["job_title", "title", "person_title", "decision_maker_title", "person_job_title"],
+        ["decision_maker_title", "job_title", "title", "person_title", "person_job_title"],
     )
 
     email, email_source = extract_email(lead, key_map)
@@ -450,8 +462,6 @@ def convert_leads(leads: List[Dict[str, Any]], limit: Optional[int]) -> List[Dic
 
     for lead in leads:
         converted, score = convert_lead(lead)
-        if not converted.get("email"):
-            continue
         key = normalize_company_key(converted.get("company_name", ""), converted.get("company_domain", ""))
         if not key:
             results.append(converted)
@@ -479,6 +489,42 @@ def ensure_sheet_tab(service, spreadsheet_id: str, sheet_name: str) -> str:
         if "already exists" in str(e):
             return sheet_name
         raise
+
+
+def ensure_sheet_size(service, spreadsheet_id: str, sheet_name: str, rows: int, cols: int) -> None:
+    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = None
+    current_rows = 0
+    current_cols = 0
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            sheet_id = props.get("sheetId")
+            grid = props.get("gridProperties", {})
+            current_rows = grid.get("rowCount", 0)
+            current_cols = grid.get("columnCount", 0)
+            break
+    if sheet_id is None:
+        return
+    if current_rows >= rows and current_cols >= cols:
+        return
+    body = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {
+                            "rowCount": max(current_rows, rows),
+                            "columnCount": max(current_cols, cols),
+                        },
+                    },
+                    "fields": "gridProperties(rowCount,columnCount)",
+                }
+            }
+        ]
+    }
+    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
 
 
 def upload_to_google_sheets(
@@ -523,14 +569,22 @@ def upload_to_google_sheets(
     else:
         rows.extend([[str(lead.get(h, "")) for h in output_headers] for lead in leads])
 
+    # Ensure the sheet grid can fit the data and clear existing values.
+    ensure_sheet_size(service, spreadsheet_id, sheet_name, len(rows), len(output_headers))
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{sheet_name}'!A:ZZ",
+        body={},
+    ).execute()
+
     chunk_size = 2000
     for i in range(0, len(rows), chunk_size):
         chunk = rows[i : i + chunk_size]
-        service.spreadsheets().values().append(
+        start_row = i + 1
+        service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"'{sheet_name}'!A1",
+            range=f"'{sheet_name}'!A{start_row}",
             valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
             body={"values": chunk},
         ).execute()
 
@@ -557,20 +611,7 @@ def main():
     parser.add_argument("--output", "-o", default=".tmp/apollo_leads.json", help="Output JSON path")
     parser.add_argument("--spreadsheet-url", help="Google Sheets URL with leads")
     parser.add_argument("--sheet-name", help="Sheet name in spreadsheet")
-    parser.add_argument(
-        "--headers-from-sheet",
-        help="Sheet name to use as headers (for headerless tabs)",
-    )
-    parser.add_argument(
-        "--headers-from-url",
-        default=DEFAULT_HEADERS_URL,
-        help="Spreadsheet URL to pull headers from",
-    )
-    parser.add_argument(
-        "--headers-sheet-name",
-        default=DEFAULT_HEADERS_SHEET,
-        help="Sheet name to pull headers from",
-    )
+    # Headers are always taken from the first row of the source sheet.
     parser.add_argument("--limit", type=int, help="Max number of leads to convert")
     parser.add_argument("--output-sheet", default="Apollo Export", help="Sheet name for upload")
     parser.add_argument("--target-spreadsheet-id", help="Spreadsheet ID to upload to")
@@ -588,18 +629,7 @@ def main():
         source_spreadsheet_id = None
     else:
         source_spreadsheet_id = parse_spreadsheet_id(args.spreadsheet_url)
-        if args.headers_from_sheet:
-            creds = authenticate_google()
-            service = build("sheets", "v4", credentials=creds)
-            data_sheet = resolve_sheet_name(
-                service, source_spreadsheet_id, args.sheet_name, args.spreadsheet_url
-            )
-            header_rows = load_sheet_rows(service, source_spreadsheet_id, args.headers_from_sheet)
-            headers = header_rows[0] if header_rows else []
-            data_rows = load_sheet_rows(service, source_spreadsheet_id, data_sheet)
-            leads = build_leads_from_rows(data_rows, headers)
-        else:
-            leads = load_from_google_sheets(args.spreadsheet_url, args.sheet_name)
+        leads = load_from_google_sheets(args.spreadsheet_url, args.sheet_name)
 
     if not leads:
         print("❌ No leads found")
@@ -610,26 +640,12 @@ def main():
     print(f"✅ Saved {len(converted)} leads to {args.output}")
 
     if not args.no_upload:
-        creds = authenticate_google()
-        service = build("sheets", "v4", credentials=creds)
-        template_headers = load_headers_from_sheet(
-            service,
-            args.headers_from_url,
-            args.headers_sheet_name,
-        )
-        if not template_headers:
-            print("❌ Failed to load headers from template sheet")
-            sys.exit(1)
-        normalized_headers = [normalize_header_key(h) for h in template_headers]
-        if "emails" not in normalized_headers:
-            print("❌ Template headers must include 'emails'")
-            sys.exit(1)
         sheet_url = upload_to_google_sheets(
             converted,
             args.output_sheet,
             args.target_spreadsheet_id or source_spreadsheet_id,
             None if (args.target_spreadsheet_id or source_spreadsheet_id) else args.folder_id,
-            headers=template_headers,
+            headers=None,
         )
         print(f"📊 Google Sheet: {sheet_url}")
 

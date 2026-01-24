@@ -10,8 +10,7 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
 - `sheet_name`: (Optional) Name of the sheet within the spreadsheet
 - `output_file`: Path to the destination JSON file (Apollo format)
 - `target_spreadsheet_id`: (Optional) ID of spreadsheet to add Apollo formatted sheet to (defaults to source spreadsheet when using `spreadsheet_url`)
-- `headers_from_url`: (Optional) Spreadsheet URL to fetch output headers from (defaults to Emails Sample 20 sheet)
-- `headers_sheet_name`: (Optional) Sheet name to fetch output headers from (defaults to Emails Sample 20 (Jan 24 2026))
+- Headers are always taken from the first row of the source sheet.
 
 ## Tools
 - `execution/convert_to_apollo.py` - Converts JSON to Apollo format
@@ -32,8 +31,8 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
    python3 execution/convert_to_apollo.py \
      --spreadsheet-url "<spreadsheet_url>" \
      --sheet-name "<sheet_name>" \
-     --output .tmp/apollo_leads.json \
-     --output-sheet "Apollo Export"
+    --output .tmp/apollo_leads.json \
+    --output-sheet "Apollo Export"
    ```
 
 ## Output
@@ -42,16 +41,15 @@ Uploads should write a new tab in the source spreadsheet (not a new spreadsheet)
 - **Logic**:
     - **One lead per company**: Prioritizes `primary_email`. If missing, uses the first available email.
     - **Field Mapping**:
-        - `full_name` is split into `first_name` and `last_name`.
+        - `decision_maker_name` is split into `first_name` and `last_name` (falls back to `full_name` if missing).
         - `company_country` is normalized to "United States".
-        - `job_title` is extracted if available.
-    - **Email required**: Leads without emails are excluded.
-    - **Headers**: Output headers are pulled from the template sheet:
-        - https://docs.google.com/spreadsheets/d/1B0dlnl-76PhdpYn5vgwI_m1KNL01zgyUzF2FsjMzDIA/edit
-        - Sheet: `Emails Sample 20 (Jan 24 2026)`
+        - `decision_maker_title` is used for `job_title` (falls back to other title fields).
+    - **Email optional**: Rows are retained even if no email exists.
+    - **Headers**: Output headers are taken from the first row of the source sheet.
 
 ## Edge Cases & Learnings
 - **String-encoded fields**: When data comes from Google Sheets, fields like `socials` and `emails_raw` may be stored as string representations of dictionaries/lists. The script now handles both string and native Python types using `ast.literal_eval()`.
 - **Field variations**: The script checks multiple field name variations (e.g., `social_linkedin`, `company_linkedin`) as fallbacks.
-- **Headerless tabs**: Some sheets store data rows without a header row (e.g., a filtered "first 100" tab). In that case, pull headers from a source sheet that has them and rebuild each row by index before converting, otherwise every field maps to empty values.
-- **Sheet names with special characters**: Sheet tabs with spaces/parentheses require quoting in A1 ranges (e.g., `'Emails Sample 20 (Jan 24 2026)'!A:ZZ`). The converter now handles this automatically.
+- **Headerless tabs**: If a sheet has no header row, it must be fixed upstream before conversion.
+- **Sheet names with special characters**: Sheet tabs with spaces/parentheses require quoting in A1 ranges (e.g., `'Some Sheet (2026)'!A:ZZ`). The converter now handles this automatically.
+- **Range parsing failures**: If Google Sheets rejects a quoted A1 range, the converter retries with an unquoted range before failing.
