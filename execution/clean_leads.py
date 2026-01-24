@@ -320,47 +320,47 @@ def check_website(url: str, timeout: int = 15, max_retries: int = 2, backoff: fl
             if not is_valid_host(parsed.netloc):
                 last_reason = "invalid_url"
                 continue
-        except Exception:
-            last_reason = "invalid_url"
-            continue
 
-        for attempt in range(max_retries + 1):
-            try:
-                response = requests.head(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
-                status = response.status_code
-                if status == 200:
-                    return True, "ok"
-
-                # Retry with GET if HEAD fails (some servers block HEAD)
-                if status in [405, 404, 403] or status >= 400:
-                    response = requests.get(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.head(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
                     status = response.status_code
                     if status == 200:
                         return True, "ok"
 
-                last_reason = f"http_{status}"
+                    # Retry with GET if HEAD fails (some servers block HEAD)
+                    if status in [405, 404, 403] or status >= 400:
+                        response = requests.get(candidate_url, headers=headers, timeout=timeout, allow_redirects=True)
+                        status = response.status_code
+                        if status == 200:
+                            return True, "ok"
 
-                if status in retryable_statuses and attempt < max_retries:
+                    last_reason = f"http_{status}"
+
+                    if status in retryable_statuses and attempt < max_retries:
+                        time.sleep(backoff * (2 ** attempt))
+                        continue
+                    return False, last_reason
+                except req_exc.Timeout:
+                    last_reason = "timeout"
+                except req_exc.SSLError:
+                    last_reason = "ssl_error"
+                except req_exc.TooManyRedirects:
+                    last_reason = "too_many_redirects"
+                except req_exc.ConnectionError:
+                    last_reason = "connection_error"
+                except req_exc.RequestException:
+                    last_reason = "request_error"
+                except Exception:
+                    last_reason = "invalid_url"
+
+                if attempt < max_retries:
                     time.sleep(backoff * (2 ** attempt))
                     continue
                 return False, last_reason
-            except req_exc.Timeout:
-                last_reason = "timeout"
-            except req_exc.SSLError:
-                last_reason = "ssl_error"
-            except req_exc.TooManyRedirects:
-                last_reason = "too_many_redirects"
-            except req_exc.ConnectionError:
-                last_reason = "connection_error"
-            except req_exc.RequestException:
-                last_reason = "request_error"
-            except Exception:
-                last_reason = "invalid_url"
-
-            if attempt < max_retries:
-                time.sleep(backoff * (2 ** attempt))
-                continue
-            return False, last_reason
+        except Exception:
+            last_reason = "invalid_url"
+            continue
 
     return False, last_reason
 
