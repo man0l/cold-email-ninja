@@ -9,6 +9,7 @@ Supports creating new spreadsheets in specified Drive folders.
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +65,130 @@ def load_json_file(file_path: str) -> List[Dict[str, Any]]:
     print(f"❌ Error: Unrecognized JSON format in {file_path}")
     sys.exit(1)
 
+
+def extract_gid(spreadsheet_url: str) -> Optional[int]:
+    match = re.search(r"[?&]gid=(\d+)", spreadsheet_url)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def parse_spreadsheet_id(spreadsheet_url: str) -> str:
+    if "/d/" in spreadsheet_url:
+        return spreadsheet_url.split("/d/")[1].split("/")[0]
+    return spreadsheet_url
+
+
+def resolve_sheet_name(service, spreadsheet_id: str, sheet_name: Optional[str], spreadsheet_url: str) -> Optional[str]:
+    if sheet_name:
+        return sheet_name
+    gid = extract_gid(spreadsheet_url)
+    if gid is None:
+        return None
+    try:
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        for sheet in meta.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("sheetId") == gid:
+                return props.get("title")
+    except HttpError:
+        return None
+    return None
+
+
+def ensure_sheet_tab(service, spreadsheet_id: str, sheet_name: str) -> str:
+    try:
+        body = {"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
+        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
+        print(f"✅ Added tab '{sheet_name}'")
+        return sheet_name
+    except HttpError as e:
+        if "already exists" in str(e):
+            return sheet_name
+        raise
+
+
+def ensure_sheet_size(service, spreadsheet_id: str, sheet_name: str, rows: int, cols: int) -> None:
+    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = None
+    current_rows = 0
+    current_cols = 0
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            sheet_id = props.get("sheetId")
+            grid = props.get("gridProperties", {})
+            current_rows = grid.get("rowCount", 0)
+            current_cols = grid.get("columnCount", 0)
+            break
+    if sheet_id is None:
+        return
+    if current_rows >= rows and current_cols >= cols:
+        return
+    body = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {
+                            "rowCount": max(current_rows, rows),
+                            "columnCount": max(current_cols, cols),
+                        },
+                    },
+                    "fields": "gridProperties(rowCount,columnCount)",
+                }
+            }
+        ]
+    }
+    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
+
+
+def apply_header_formatting(service, spreadsheet_id: str, sheet_name: str, header_count: int) -> None:
+    try:
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheet_id = None
+        for sheet in meta.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == sheet_name:
+                sheet_id = props.get("sheetId")
+                break
+        if sheet_id is None:
+            return
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "repeatCell": {
+                            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "textFormat": {"bold": True},
+                                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                                }
+                            },
+                            "fields": "userEnteredFormat(textFormat,backgroundColor)",
+                        }
+                    },
+                    {
+                        "autoResizeDimensions": {
+                            "dimensions": {
+                                "sheetId": sheet_id,
+                                "dimension": "COLUMNS",
+                                "startIndex": 0,
+                                "endIndex": header_count,
+                            }
+                        }
+                    },
+                ]
+            },
+        ).execute()
+    except HttpError:
+        pass
 
 def export_to_google_sheets(
     leads: List[Dict[str, Any]],
@@ -185,6 +310,50 @@ def export_to_google_sheets(
     return sheet_url
 
 
+def upload_to_existing_sheet(
+    leads: List[Dict[str, Any]],
+    spreadsheet_url: str,
+    sheet_name: Optional[str],
+) -> str:
+    if not leads:
+        print("❌ No data to export")
+        sys.exit(1)
+
+    creds = authenticate_google()
+    service = build("sheets", "v4", credentials=creds)
+
+    spreadsheet_id = parse_spreadsheet_id(spreadsheet_url)
+    resolved_name = resolve_sheet_name(service, spreadsheet_id, sheet_name, spreadsheet_url)
+    if not resolved_name:
+        resolved_name = sheet_name or "Sheet1"
+    resolved_name = ensure_sheet_tab(service, spreadsheet_id, resolved_name)
+
+    headers = list(leads[0].keys())
+    rows = [headers]
+    rows.extend([[str(lead.get(h, "")) for h in headers] for lead in leads])
+
+    ensure_sheet_size(service, spreadsheet_id, resolved_name, len(rows), len(headers))
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{resolved_name}'!A:ZZ",
+        body={},
+    ).execute()
+
+    chunk_size = 2000
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i : i + chunk_size]
+        start_row = i + 1
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{resolved_name}'!A{start_row}",
+            valueInputOption="RAW",
+            body={"values": chunk},
+        ).execute()
+
+    apply_header_formatting(service, spreadsheet_id, resolved_name, len(headers))
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Export JSON data to Google Sheets',
@@ -210,6 +379,12 @@ Examples:
                         help=f'Google Drive folder ID (default: {DEFAULT_FOLDER_ID})')
     parser.add_argument('--no-folder', action='store_true',
                         help='Create in Drive root instead of default folder')
+    parser.add_argument('--spreadsheet-url', default=None,
+                        help='Existing Google Sheet URL to overwrite')
+    parser.add_argument('--spreadsheet-id', default=None,
+                        help='Existing Google Sheet ID to overwrite')
+    parser.add_argument('--sheet-name', default=None,
+                        help='Target tab name when overwriting a sheet')
 
     args = parser.parse_args()
 
@@ -218,11 +393,14 @@ Examples:
     leads = load_json_file(args.input)
     print(f"   Found {len(leads)} records")
 
-    # Determine folder
-    folder_id = None if args.no_folder else args.folder_id
-
-    # Export
-    sheet_url = export_to_google_sheets(leads, args.output_sheet, folder_id)
+    if args.spreadsheet_url or args.spreadsheet_id:
+        target = args.spreadsheet_url or args.spreadsheet_id
+        print(f"📤 Overwriting spreadsheet: {target}")
+        sheet_url = upload_to_existing_sheet(leads, target, args.sheet_name or args.output_sheet)
+    else:
+        # Determine folder
+        folder_id = None if args.no_folder else args.folder_id
+        sheet_url = export_to_google_sheets(leads, args.output_sheet, folder_id)
 
     print(f"\n✅ Export complete!")
     print(f"📊 Google Sheet: {sheet_url}")
