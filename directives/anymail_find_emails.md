@@ -14,6 +14,8 @@ Find decision maker email addresses for each lead using the Anymail Finder API. 
 - **Decision Maker Categories**: One or more categories, in priority order (e.g., `ceo`, `finance`, `sales`).
 - **Max Leads** (Optional): Limit processing count (default: 100)
 - **Include Existing** (Optional): `--include-existing` to reprocess leads with existing decision maker emails
+- **Require Decision Maker Name** (Optional): `--require-decision-maker-name` to only process rows with a decision maker name (full_name or first+last)
+- **Require Empty Email** (Optional): `--require-empty-email` to only process rows with an empty `email` column
 
 ## Environment Variables
 - `ANYMAIL_FINDER_API_KEY`: Required. API key for Anymail Finder.
@@ -23,21 +25,24 @@ Find decision maker email addresses for each lead using the Anymail Finder API. 
 1. **Load Data**: Read leads from CSV/JSON or Google Sheet.
 2. **Normalize Domain**: Extract domain from fields like `website`, `companyWebsite`, `company_website`, or `domain`.
 3. **Fallback Company Name**: If domain is missing, use `company_name`, `company`, or `name`.
-4. **Skip Existing**: By default, process only leads missing decision maker email fields.
-5. **Validate Input**: Ensure each lead has a domain or company name.
-6. **Permission Check**: Ask for confirmation before running, showing:
+4. **Optional Filters**:
+   - `--require-decision-maker-name` only processes rows with decision maker name fields
+   - `--require-empty-email` only processes rows where `email` is empty
+5. **Skip Existing**: By default, process only leads missing decision maker email fields.
+6. **Validate Input**: Ensure each lead has a domain or company name.
+7. **Permission Check**: Ask for confirmation before running, showing:
    - Total leads
    - Leads that will be processed
    - Max leads limit
    - Estimated cost range (best effort)
-7. **API Calls**: Send POST requests to Anymail Finder with the selected categories in priority order.
-8. **Save Results**: Write response fields to output columns:
+8. **API Calls**: Send POST requests to Anymail Finder with the selected categories in priority order.
+9. **Save Results**: Write response fields to output columns:
    - `decision_maker_email`
    - `decision_maker_email_status`
    - `decision_maker_name`
    - `decision_maker_title`
    - `decision_maker_linkedin`
-9. **Output**: Save to a **new** Google Sheet or JSON file, preserving all original fields.
+10. **Output**: Save to a **new** Google Sheet or JSON file, preserving all original fields.
 
 ## Tools
 - `execution/anymail_find_emails.py` - Anymail Finder decision maker email enrichment script
@@ -97,6 +102,8 @@ python execution/anymail_find_emails.py \
 - `--sheet-name "Sheet1"`: Source sheet name (default: first sheet)
 - `--folder-id "FOLDER_ID"`: Drive folder for output
 - `--include-existing`: Process leads that already have decision maker email fields
+- `--require-decision-maker-name`: Only process rows with a decision maker name (full_name or first+last)
+- `--require-empty-email`: Only process rows with empty `email`
 - `--skip-first 1000`: Skip the first N leads from the source
 - `--verbose`: Log per-lead decisions
 

@@ -290,6 +290,23 @@ def has_decision_maker_email(lead: Dict[str, Any]) -> bool:
     return bool(value)
 
 
+def has_primary_email(lead: Dict[str, Any]) -> bool:
+    value = get_value_case_insensitive(lead, ["email"])
+    return bool(value)
+
+
+def has_decision_maker_name(lead: Dict[str, Any]) -> bool:
+    full_name = get_value_case_insensitive(
+        lead,
+        ["full_name", "person_full_name", "contact_full_name", "decision_maker_name"],
+    )
+    first_name = get_value_case_insensitive(lead, ["first_name", "person_first_name", "contact_first_name"])
+    last_name = get_value_case_insensitive(lead, ["last_name", "person_last_name", "contact_last_name"])
+    if full_name and full_name.strip():
+        return True
+    return bool((first_name or "").strip() and (last_name or "").strip())
+
+
 def call_anymail_finder(
     api_key: str,
     domain: Optional[str],
@@ -355,6 +372,8 @@ def main() -> None:
     parser.add_argument("--output-in-place", action="store_true", help="Update the source sheet in place")
     parser.add_argument("--folder-id", default=os.getenv("GOOGLE_DRIVE_FOLDER_ID"), help="Drive folder ID")
     parser.add_argument("--decision-maker-category", action="append", dest="categories", help="Decision maker category (repeatable)")
+    parser.add_argument("--require-decision-maker-name", action="store_true", help="Only process leads with decision maker name fields")
+    parser.add_argument("--require-empty-email", action="store_true", help="Only process leads with empty email column")
     parser.add_argument("--max-leads", type=int, default=100, help="Max leads to process")
     parser.add_argument("--include-existing", action="store_true", help="Process leads that already have decision maker email")
     parser.add_argument("--skip-first", type=int, default=0, help="Skip the first N leads")
@@ -414,6 +433,10 @@ def main() -> None:
 
     to_process_indexes: List[int] = []
     for idx, lead in enumerate(leads):
+        if args.require_empty_email and has_primary_email(lead):
+            continue
+        if args.require_decision_maker_name and not has_decision_maker_name(lead):
+            continue
         if not args.include_existing and has_decision_maker_email(lead):
             continue
         domain, company = get_domain_or_company(lead)
