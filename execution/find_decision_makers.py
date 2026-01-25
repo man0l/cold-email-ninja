@@ -453,6 +453,15 @@ def was_processed(lead: Dict[str, Any]) -> bool:
     return str(value).strip().lower() in ["yes", "true", "1"]
 
 
+def is_blank_checked(lead: Dict[str, Any]) -> bool:
+    if "decision_maker_checked" not in lead:
+        return True
+    value = lead.get("decision_maker_checked", "")
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip() == ""
+
+
 def fetch_url(url: str, timeout: int = 20, verbose: bool = False) -> Optional[str]:
     try:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; DecisionMakerBot/1.0)"}
@@ -1154,6 +1163,11 @@ def main():
     parser.add_argument("--workers", type=int, default=25, help="Concurrent lead workers (default: 25)")
     parser.add_argument("--include-existing", action="store_true", help="Process leads with existing decision maker")
     parser.add_argument("--folder-id", help="Google Drive folder ID for output (optional)")
+    parser.add_argument(
+        "--only-blank-checked",
+        action="store_true",
+        help="Only process leads where decision_maker_checked is blank and name is missing",
+    )
     parser.add_argument("--skip-dataforseo", action="store_true", help="Skip DataForSEO Google search")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--log-file", help="Write console output to a log file")
@@ -1268,6 +1282,14 @@ def main():
             print(f"   Skipped first: {skipped_count}")
         print(f"   Leads considered: {len(leads)}")
         print(f"   Leads not yet processed: {len(leads_to_process)}")
+
+    if args.only_blank_checked:
+        leads_to_process = [
+            lead
+            for lead in leads_to_process
+            if is_blank_checked(lead) and not has_decision_maker(lead)
+        ]
+        print(f"   Leads with blank decision_maker_checked: {len(leads_to_process)}")
 
     # Deduplicate by website domain for efficiency
     unique_by_domain: Dict[str, Dict[str, Any]] = {}
