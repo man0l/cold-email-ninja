@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dotenv import load_dotenv
 import requests
+from fix_location_columns import extract_country, parse_address_city_state_zip
 
 # Load environment variables
 load_dotenv()
@@ -125,31 +126,52 @@ def search_google_maps(query: str, api_key: str, limit: int = 20, offset: int = 
 
 def parse_lead(result: Dict[str, Any], keyword: str, location: str) -> Dict[str, Any]:
     """Parse API result into standardized lead format"""
-    # Parse address components
+    # Parse address components with robust parsing (shared with fix_location_columns)
     full_address = result.get('full_address', '') or ''
-    address_parts = full_address.split(', ')
+    country, address_without_country = extract_country(full_address)
+    address_without_country = address_without_country or full_address
 
-    street = address_parts[0] if len(address_parts) > 0 else ''
-    city = address_parts[1] if len(address_parts) > 1 else ''
+    city, state, zip_code = '', '', ''
+    parsed_city, parsed_state, parsed_zip = parse_address_city_state_zip(address_without_country)
+    if parsed_city:
+        city = parsed_city
+    if parsed_state:
+        state = parsed_state
+    if parsed_zip:
+        zip_code = parsed_zip
 
-    # Parse state and zip from last part (e.g., "NY 10001")
-    state_zip = address_parts[2] if len(address_parts) > 2 else ''
-    state = ''
-    zip_code = ''
-    if state_zip:
-        parts = state_zip.split()
-        if parts:
-            state = parts[0]
-            zip_code = parts[1] if len(parts) > 1 else ''
+    parts = [part.strip() for part in address_without_country.split(",") if part.strip()]
+    street = ''
+    if len(parts) >= 3:
+        street = ", ".join(parts[:-2])
+    elif len(parts) == 2:
+        if state or zip_code:
+            street = ''
+            if not city:
+                city = parts[0]
+        else:
+            street = parts[0]
+            if not city:
+                city = parts[1]
+    elif len(parts) == 1:
+        street = parts[0]
 
-    country = address_parts[3] if len(address_parts) > 3 else 'USA'
+    country = country or 'USA'
+
+    name = result.get('name', '')
+    if street and name:
+        name_lower = name.strip().lower()
+        street_strip = street.strip()
+        if name_lower and street_strip.lower().startswith(name_lower):
+            remainder = street_strip[len(name_lower):].lstrip(" ,")
+            street = remainder or street_strip
 
     # Extract category from 'types' array (API returns types, not category)
     types = result.get('types', [])
     category = types[0] if types else ''
 
     return {
-        'name': result.get('name', ''),
+        'name': name,
         'address': street,
         'city': city,
         'state': state,

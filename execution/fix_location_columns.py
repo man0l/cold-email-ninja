@@ -21,9 +21,9 @@ try:
     from googleapiclient.errors import HttpError
     from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 except ImportError:
-    print("❌ Error: Google API libraries not available.")
-    print("   Install with: pip install google-api-python-client google-auth")
-    sys.exit(1)
+    build = None
+    HttpError = Exception
+    ServiceAccountCredentials = None
 
 
 SCOPES = [
@@ -145,6 +145,10 @@ COUNTRY_RE = re.compile(r"\b(usa|us|united states|united states of america)\b", 
 
 
 def authenticate_google():
+    if build is None or ServiceAccountCredentials is None:
+        print("❌ Error: Google API libraries not available.")
+        print("   Install with: pip install google-api-python-client google-auth")
+        sys.exit(1)
     creds_path = "credentials.json"
     if not os.path.exists(creds_path):
         print(f"❌ Error: {creds_path} not found")

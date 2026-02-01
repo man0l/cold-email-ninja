@@ -38,6 +38,10 @@ Before writing a script, check `execution/` per your directive. Only create new 
 **3. Update directives as you learn**
 Directives are living documents. When you discover API constraints, better approaches, common errors, or timing expectations—update the directive. But don't create or overwrite directives without asking unless explicitly told to. Directives are your instruction set and must be preserved (and improved upon over time, not extemporaneously used and then discarded).
 
+## Contabo Execution (MCP)
+
+When the user asks to run anything on Contabo (or mentions Contabo), use the Contabo MCP runner and explicitly acknowledge the MCP in your response. Do not run locally. Use the `user-contabo-python-runner` MCP tools for execution and logs.
+
 ## Self-annealing loop
 
 Errors are learning opportunities. When something breaks:
